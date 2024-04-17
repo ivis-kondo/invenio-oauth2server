@@ -21,6 +21,7 @@ from flask_kvsession import KVSessionInterface
 from flask_login import current_user
 from flask_oauthlib.contrib.oauth2 import bind_cache_grant
 from werkzeug.utils import cached_property, import_string
+from weko_redis.redis import RedisConnectionExtension
 
 from . import config
 from .models import OAuthUserProxy, Scope
@@ -39,13 +40,20 @@ class _OAuth2ServerState(object):
         oauth2.init_app(app)
 
         # Flask-OAuthlib does not support CACHE_REDIS_URL
-        if app.config['OAUTH2_CACHE_TYPE'] == 'redis' and app.config.get(
-                'CACHE_REDIS_URL'):
-            from redis import from_url as redis_from_url
-            app.config.setdefault(
-                'OAUTH2_CACHE_REDIS_HOST',
-                redis_from_url(app.config['CACHE_REDIS_URL'])
-            )
+        if app.config['OAUTH2_CACHE_TYPE'] == 'redissentinel' and app.config.get(
+                'CACHE_REDIS_SENTINELS'):
+
+            redis_connection = RedisConnectionExtension()
+            if app.config['CACHE_TYPE'] == 'redis':
+                app.config.setdefault(
+                    'OAUTH2_CACHE_REDIS_HOST',
+                    redis_connection.redis_connection(app.config['CACHE_REDIS_HOST'], app.config['REDIS_PORT'], app.config['CACHE_REDIS_DB'], kv = False)
+                )
+            elif app.config['CACHE_TYPE'] == 'redissentinel':
+                app.config.setdefault(
+                    'OAUTH2_CACHE_REDIS_HOST',
+                    redis_connection.sentinel_connection(app.config['CACHE_REDIS_SENTINELS'], app.config['CACHE_REDIS_SENTINEL_MASTER'], app.config['CACHE_REDIS_DB'], kv = False)
+                )
 
         # Configures an OAuth2Provider instance to use configured caching
         # system to get and set the grant token.
@@ -177,7 +185,19 @@ def verify_oauth_token_and_set_current_user():
     if not hasattr(request, 'oauth') or not request.oauth:
         scopes = []
         try:
-            valid, req = oauth2.verify_request(scopes)
+            valid = False
+            req = request
+            if 'Authorization' in request.headers:
+                header = request.headers['Authorization']
+                authType = header.split(' ')[0].lower()
+                if authType == 'basic':
+                    valid = False
+                elif authType == 'digest':
+                    valid = False
+                else:
+                    valid, req = oauth2.verify_request(scopes)
+            else:
+                valid, req = oauth2.verify_request(scopes)
         except ValueError:
             abort(400, 'Error trying to decode a non urlencoded string.')
 
